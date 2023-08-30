@@ -437,13 +437,19 @@ wandbでlossと評価値を確認すると確認するとepoch毎にlossは下�
 
 
 ## 推論
-テストデータに対して推論を行い、評価を確認します。
+テストデータに対して推論を行い、評価を確認します。  
+予測した結果はwandbのTableに保存します。  
+正解画像と予測画像を横並びに表示し、実際にどの程度セグメンテーションできているかを視覚的に確認できるようにしています。  
+CTは3Dデータなので、3Dでスライドしながら結果を確認していきます。   
 
 ```python
 # 学習済みの重みをロード
 model_path = "best_metric_model.pth"
 model.load_state_dict(torch.load(model_path))
 model.eval()  # モデルを評価モードに設定
+
+columns = ['ground_truth', 'prediction', 'metric']
+test_table = wandb.Table(columns=columns)
 
 # テストデータに対して推論を行う
 with torch.no_grad():  # 勾配の計算を無効化
@@ -453,7 +459,7 @@ with torch.no_grad():  # 勾配の計算を無効化
         sw_batch_size = 4
         # モデルを介して入力を伝播し、推論結果を取得
         test_outputs = sliding_window_inference(test_inputs, roi_size, sw_batch_size, model)
-        
+
         # sigmoid関数を適用し0~1の値に変換
         test_outputs_binary = torch.sigmoid(test_outputs)
 
@@ -461,47 +467,38 @@ with torch.no_grad():  # 勾配の計算を無効化
         test_outputs_binary = (test_outputs_binary >= 0.5).float()
 
         test_outputs_np = test_outputs_binary.cpu().numpy()
+        test_labels_np = test_labels.cpu().numpy()
 
         # 可視化のために次元を変換 (1, 96, 96, 96) => (96, 96, 96)
-        test_outputs_np = np.reshape(test_outputs_np, (96, 96, 96)) 
+        test_outputs_np = np.reshape(test_outputs_np, (96, 96, 96))
+        test_labels_np = np.reshape(test_labels_np, (96, 96, 96))
         # NumPy配列をファイルに保存
         np.save(f'test_output_{i}.npy', test_outputs_np)
         # Diceメトリックを計算
-        dice_metric(y_pred=test_outputs, y=test_labels)
+        metric = dice_metric(y_pred=test_outputs, y=test_labels)
+        metric = metric.cpu().item()
+        
+        test_table.add_data([wandb.Image(img) for img in test_labels_np], [wandb.Image(img) for img in test_outputs_np], metric)
+
 
     test_metric = dice_metric.aggregate().item()  # Diceメトリックの平均を計算
     print(f"Dice metric on test data: {test_metric:.4f}")
 wandb.log({'test_metric': test_metric})
+wandb.log({"test_predictions" : test_table})
 
 wandb.finish()
 ```
 
-
 ## 予測結果の確認
-予測した結果を確認します。CTは3Dデータなので、3Dでスライドしながら結果を確認していきます。
+wandbで予測結果を確認した結果が下の図になります。  
+左側の列が正解画像、真ん中が予測画像、右側の列が評価値となっています。  
+実際に画像を見てみると、あまりうまく予測できていないことがわかります。  
+wandbを利用することで3D画像でも簡単に予測結果の確認ができました。
 
-コードは、3D配列pred_maskをスライスして各スライスをアニメーションとして表示します。スライスは配列の3番目の次元（z軸）に沿って取られ、各フレームで表示されます。アニメーションはJupyter Notebook内でHTMLとして表示されます。
 
-```python
-import numpy as np  # NumPyをインポート
-import matplotlib.pyplot as plt  # Matplotlibのpyplotをインポート
-import matplotlib.animation as animation  # Matplotlibのanimationをインポート
-from IPython.display import HTML  # Jupyter notebook上でHTMLを表示するための関数をインポート
+![Results](https://raw.githubusercontent.com/elith-co-jp/prj-wandb-monai/main/fig/wandb_table.png)
 
-pred_mask = np.load("test_output_0.npy")  # 3D配列（予測マスク）をNumPyのnpyファイルから読み込む
-
-fig, ax = plt.subplots()  # 新しい図と座標系を作成
-
-# この関数はアニメーションの各フレームで呼び出されます
-def update(i):
-    ax.clear()  # 現在の座標系をクリア
-    ax.imshow(pred_mask[:, :, i], cmap='gray')  # 3D配列のスライスを表示
-
-# アニメーションを作成
-ani = animation.FuncAnimation(fig, update, interval=100, frames=range(pred_mask.shape[2]))
-
-plt.close()  # 二重に図が表示されるのを防ぐために図を閉じる
-
-# アニメーションをHTMLに変換
-HTML(ani.to_jshtml())
-```
+# おわりに
+この記事では放射線治療現場でのAIを用いた自動輪郭抽出の実験管理をWeight&Biases(wandb)のプラットフォームを使って管理する方法について共有しました。  
+wandbを利用することで、学習の管理から結果の管理まで簡単にすることができます。  
+とても便利なので、ぜひ利用してみてみください。
